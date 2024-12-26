@@ -1,0 +1,5 @@
+pandas
+pyprind
+scikit-learn
+bs4
+nltk
