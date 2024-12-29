@@ -17,6 +17,8 @@ porter = PorterStemmer()
 
 porter_stop = None
 
+df = None
+
 
 def get_porter_stemmer_stop_word_list():
     global porter_stop
@@ -29,7 +31,9 @@ def get_porter_stemmer_stop_word_list():
         porter_stop.append('becau')
     return porter_stop
 
-porter_stop= get_porter_stemmer_stop_word_list()
+
+porter_stop = get_porter_stemmer_stop_word_list()
+
 
 def extract_tar_gz(tar_gz_file):
     """
@@ -60,20 +64,18 @@ def create_appended_csv_from_acl_imdb_data(csv_file):
                 txt = f.read()
                 df = pd.concat([df, pd.DataFrame([[txt, label_mapping[label]]])])
             progress_bar.update()
-    np.random.seed(0)
-    df = df.reindex(np.random.permutation(df.index))
+    # ensure the dataframe rows are random and shuffled No 5 rows show gave the same value
+    df = df.sample(frac=1).reset_index(drop=True)
+
     df.to_csv(csv_file, index=False, encoding='utf-8')
     return df
 
 
-def get_acl_imdb_df():
+def get_acl_imdb_df(data_file='movie_data.csv'):
     global df
-    if not os.path.exists('aclImdb'):
-        extract_tar_gz('aclImdb_v1.tar.gz')
-    data_file = 'movie_data.csv'
-    if not os.path.exists(data_file):
-        df = create_appended_csv_from_acl_imdb_data(data_file)
-    else:
+    if not df:
+        generate_acl_imdb_csv(data_file)
+    if not df:
         df = pd.read_csv(data_file, encoding='utf-8')
     df = df.rename(columns={'0': 'review', '1': 'sentiment'})
     return df
@@ -92,7 +94,7 @@ def get_bag_of_words_vectors(documents_sentiment_df):
     from sklearn.feature_extraction.text import CountVectorizer
     count = CountVectorizer()
     bag_of_words = count.fit_transform(documents_sentiment_df['review'].values)
-    return bag_of_words
+    return bag_of_words , count
 
 
 def get_tfidf_vectors(docs_sentiments_df):
@@ -111,6 +113,15 @@ def get_tfidf_vectors(docs_sentiments_df):
     tfidf = TfidfVectorizer(strip_accents=None, lowercase=False, preprocessor=None)
     tfidf_vectors = tfidf.fit_transform(docs_sentiments_df['review'].values)
     return tfidf_vectors
+
+
+def generate_acl_imdb_csv(data_file):
+    global df
+    if not os.path.exists('aclImdb'):
+        extract_tar_gz('aclImdb_v1.tar.gz')
+    if not os.path.exists(data_file):
+        df = create_appended_csv_from_acl_imdb_data(data_file)
+    return df
 
 
 def remove_html_tags_using_bs4(text):
@@ -174,8 +185,55 @@ def tokenize_and_stem_remove_stop(text):
     return [porter.stem(word) for word in tokenize(text) if porter.stem(word) not in porter_stop]
 
 
+def stream_acl_imdb_df(data_file='movie_data.csv'):
+    """
+    This function streams the aclImdb data line by line
+    :return:  generator
+    """
+    # if file data_file does not exist call generate_acl_imdb_csv(data_file)
+    if not os.path.exists(data_file):
+        generate_acl_imdb_csv(data_file)
+
+    with open(data_file, 'r', encoding='utf-8') as f:
+        next(f)  # skip the header
+        for line in f:
+            # last text from back starting with , and ending with \n
+            last_comma = line.rfind(',')
+            label_start = last_comma + 1
+            text_end = last_comma - len(line)
+            label = line[label_start:-1]
+            text = line[:text_end]
+            yield text, int(label)
+
+
+def get_mini_batch_from_stream(stream_generator, batch_size=10):
+    """
+    This function generates a mini-batch from a stream
+    :param stream_generator:  The stream generator
+    :param batch_size:  The batch size
+    :return:  The mini-batch
+    """
+    mini_batch_docs = []
+    mini_batch_labels = []
+    for _ in range(batch_size):
+        try:
+            line_doc, line_label = next(stream_generator)
+            mini_batch_docs.append(remove_html_tags_using_bs4(line_doc))
+            mini_batch_labels.append(line_label)
+        except StopIteration:
+            return None, None
+    return mini_batch_docs, mini_batch_labels
+
+
 if __name__ == '__main__':
     # if aclImdb folder already exists skip extract all
+    file_path = 'movie_data.csv'
+    generator = stream_acl_imdb_df(file_path)
+    all_lines = []
+    for i in range(2):
+        lines = get_mini_batch_from_stream(generator, batch_size=5)
+        print(lines)
+        all_lines.extend(lines)
     acl_imdb_df = get_acl_imdb_df()
     acl_imdb_df['review'] = acl_imdb_df['review'].apply(remove_html_tags_using_bs4)
     acl_imdb_df['review'] = acl_imdb_df['review'].apply(tokenize_and_stem_remove_stop)
